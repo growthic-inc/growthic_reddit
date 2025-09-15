@@ -37,29 +37,38 @@ class FirebaseAuth:
     def _initialize_firebase(self):
         """Initialize Firebase Admin SDK."""
         try:
+            import streamlit as st  # only available on Streamlit Cloud
+
             # Check if already initialized
             if firebase_admin._apps:
                 return True
-                
+
             firebase_credentials_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
-            
-            # Auto-detect local firebase-service-account.json if no env var set
-            if not firebase_credentials_path:
+
+            # Case 1: Use Streamlit secrets (Streamlit Cloud)
+            if "firebase" in st.secrets:
+                cred = credentials.Certificate(dict(st.secrets["firebase"]))
+
+            # Case 2: Use local firebase-service-account.json if available
+            elif not firebase_credentials_path:
                 default_path = os.path.join(os.path.dirname(__file__), "firebase-service-account.json")
                 if os.path.exists(default_path):
                     firebase_credentials_path = default_path
-            
+
             if firebase_credentials_path and os.path.exists(firebase_credentials_path):
                 cred = credentials.Certificate(firebase_credentials_path)
             else:
                 cred = credentials.ApplicationDefault()
-            
+
+            # Initialize
             firebase_admin.initialize_app(cred)
             logger.info("Firebase Admin SDK initialized successfully")
             return True
+
         except Exception as e:
             logger.exception(f"Firebase initialization failed: {e}")
             return False
+
     
     def authenticate_user(self, email: str, password: str) -> Dict[str, Any]:
         """Authenticate user with email and password using Firebase REST API."""
