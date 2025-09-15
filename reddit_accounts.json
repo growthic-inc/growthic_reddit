@@ -1,0 +1,40 @@
+{
+  "accounts": [
+    {
+      "id": 1,
+      "username": "your_reddit_username_1",
+      "client_id": "your_app_client_id_1",
+      "client_secret": "your_app_client_secret_1",
+      "user_agent": "YourAppName/1.0 by /u/your_reddit_username_1",
+      "password": "your_reddit_password_1",
+      "enabled": true,
+      "description": "Main marketing account"
+    },
+    {
+      "id": 2,
+      "username": "your_reddit_username_2",
+      "client_id": "your_app_client_id_2",
+      "client_secret": "your_app_client_secret_2",
+      "user_agent": "YourAppName/1.0 by /u/your_reddit_username_2",
+      "password": "your_reddit_password_2",
+      "enabled": true,
+      "description": "Secondary content account"
+    },
+    {
+      "id": 3,
+      "username": "your_reddit_username_3",
+      "client_id": "your_app_client_id_3",
+      "client_secret": "your_app_client_secret_3",
+      "user_agent": "YourAppName/1.0 by /u/your_reddit_username_3",
+      "password": "your_reddit_password_3",
+      "enabled": false,
+      "description": "Backup account (disabled)"
+    }
+  ],
+  "global_settings": {
+    "rate_limit_delay": 2,
+    "max_retries": 3,
+    "timeout": 30,
+    "default_send_replies": true
+  }
+}
