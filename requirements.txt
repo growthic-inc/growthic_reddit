@@ -1,0 +1,6 @@
+streamlit
+praw
+prawcore
+python-dotenv
+firebase-admin
+requests
