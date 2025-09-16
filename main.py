@@ -32,22 +32,42 @@ class FirebaseAuth:
     
     def __init__(self):
         self.initialized = self._initialize_firebase()
-        self.web_api_key = os.getenv("FIREBASE_WEB_API_KEY")
+        self.web_api_key = self._get_web_api_key()
     
+    def _get_web_api_key(self):
+        """Get Firebase Web API key from environment variables or Streamlit secrets."""
+        # First try environment variables
+        web_api_key = os.getenv("FIREBASE_WEB_API_KEY")
+        
+        if not web_api_key:
+            try:
+                import streamlit as st
+                # Try to get from Streamlit secrets (top level)
+                if hasattr(st, 'secrets') and "FIREBASE_WEB_API_KEY" in st.secrets:
+                    web_api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+            except Exception as e:
+                logger.warning(f"Could not access Streamlit secrets for web_api_key: {e}")
+        
+        return web_api_key
+
     def _initialize_firebase(self):
         """Initialize Firebase Admin SDK."""
         try:
-            import streamlit as st  # only available on Streamlit Cloud
+            import streamlit as st
 
             # Check if already initialized
             if firebase_admin._apps:
                 return True
 
             firebase_credentials_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
+            cred = None
+            project_id = None
 
             # Case 1: Use Streamlit secrets (Streamlit Cloud)
             if "firebase" in st.secrets:
-                cred = credentials.Certificate(dict(st.secrets["firebase"]))
+                firebase_config = dict(st.secrets["firebase"])
+                cred = credentials.Certificate(firebase_config)
+                project_id = firebase_config.get("project_id")
 
             # Case 2: Use local firebase-service-account.json if available
             elif not firebase_credentials_path:
@@ -57,18 +77,29 @@ class FirebaseAuth:
 
             if firebase_credentials_path and os.path.exists(firebase_credentials_path):
                 cred = credentials.Certificate(firebase_credentials_path)
-            else:
+                # Read project ID from file
+                with open(firebase_credentials_path, 'r') as f:
+                    cred_data = json.load(f)
+                    project_id = cred_data.get("project_id")
+            elif not cred:
                 cred = credentials.ApplicationDefault()
 
-            # Initialize
-            firebase_admin.initialize_app(cred)
-            logger.info("Firebase Admin SDK initialized successfully")
+            # Set project ID as environment variable if not already set
+            if project_id and not os.getenv("GOOGLE_CLOUD_PROJECT"):
+                os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+
+            # Initialize with explicit options
+            options = {}
+            if project_id:
+                options["projectId"] = project_id
+
+            firebase_admin.initialize_app(cred, options)
+            logger.info(f"Firebase Admin SDK initialized successfully for project: {project_id}")
             return True
 
         except Exception as e:
             logger.exception(f"Firebase initialization failed: {e}")
-            return False
-
+            return False    
     
     def authenticate_user(self, email: str, password: str) -> Dict[str, Any]:
         """Authenticate user with email and password using Firebase REST API."""
