@@ -690,7 +690,7 @@ def render_login_page(firebase_auth):
         st.markdown("### Welcome! Please sign in to continue")
         
         if firebase_auth.initialized:
-            st.info("🔐 Firebase authentication is enabled")
+            st.info("🔒 Firebase authentication is enabled")
             
             # Login form
             with st.form("login_form"):
@@ -719,7 +719,7 @@ def render_login_page(firebase_auth):
             st.markdown("**Need an account?** Contact your administrator to set up Firebase Authentication.")
             
         else:
-            st.warning("🔐 Firebase not configured - Running in demo mode")
+            st.warning("🔒 Firebase not configured - Running in demo mode")
             if st.button("Continue without Authentication"):
                 st.session_state.authenticated = True
                 st.session_state.user = {
@@ -871,22 +871,29 @@ def render_main_app(firebase_auth, reddit_core):
                         st.success(f"✅ {result['message']}")
                         post_details = result["post_details"]
                         
-                        # Display post details
+                        # Display post details with prominent Post ID
                         st.markdown("### Post Details")
+                        
+                        # Highlight Post ID prominently
+                        st.markdown("#### 🆔 Post ID (copy this to view comments)")
+                        st.code(post_details['post_id'], language=None)
+                        
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            st.write(f"**Post ID:** {post_details['post_id']}")
                             st.write(f"**Post Type:** {post_details['post_type']}")
                             st.write(f"**Account Used:** {post_details['account_used']}")
+                            st.write(f"**Subreddit:** r/{post_details['subreddit']}")
                         
                         with col2:
-                            st.write(f"**Subreddit:** r/{post_details['subreddit']}")
                             st.write(f"**NSFW:** {post_details['nsfw']}")
                             st.write(f"**Spoiler:** {post_details['spoiler']}")
+                            st.write(f"**Flair Applied:** {post_details['flair_applied']}")
                         
                         if post_details['post_url']:
                             st.markdown(f"🔗 **[View Post on Reddit]({post_details['post_url']})**")
+                        
+                        st.info("💡 Copy the Post ID above to use in the Comments tab to view and reply to comments!")
                     else:
                         st.error(f"❌ Failed to post: {result['error']}")
                         if 'details' in result:
@@ -953,7 +960,19 @@ def render_main_app(firebase_auth, reddit_core):
                 
                 if posts:
                     for post in posts:
-                        with st.expander(f"📝 {post['title'][:80]}... | r/{post['subreddit']} | {post['score']} pts"):
+                        # Create expandable section with Post ID prominently displayed
+                        with st.expander(f"📝 {post['title'][:70]}... | r/{post['subreddit']} | {post['score']} pts | ID: {post['id']}"):
+                            
+                            # Prominently display Post ID at the top
+                            st.markdown("#### 🆔 Post ID (copy to view comments)")
+                            col_id, col_copy = st.columns([3, 1])
+                            with col_id:
+                                st.code(post['id'], language=None)
+                            with col_copy:
+                                st.button(f"📋 Copy", key=f"copy_{post['id']}", help="Click to select Post ID")
+                            
+                            st.markdown("---")
+                            
                             col1, col2 = st.columns([2, 1])
                             
                             with col1:
@@ -978,6 +997,10 @@ def render_main_app(firebase_auth, reddit_core):
                                     st.warning("Locked")
                                 
                                 st.markdown(f"[View on Reddit]({post['url']})")
+                            
+                            # Add quick action to navigate to comments
+                            if post['num_comments'] > 0:
+                                st.info(f"💬 This post has {post['num_comments']} comments. Copy the Post ID above and use it in the Comments tab!")
                 else:
                     st.info("No posts found for the selected time period.")
             else:
@@ -985,6 +1008,9 @@ def render_main_app(firebase_auth, reddit_core):
     
     with tab4:
         st.header("Post Comments")
+        
+        # Add helpful instruction at the top
+        st.info("💡 Copy a Post ID from the 'My Posts' tab or from a successful post creation to view its comments here.")
         
         col1, col2 = st.columns([2, 1])
         
@@ -1003,6 +1029,10 @@ def render_main_app(firebase_auth, reddit_core):
             if result["success"]:
                 comments = result["comments"]
                 st.success(f"✅ Found {len(comments)} comments for: {result['post_title']}")
+                
+                # Display Post ID being viewed
+                st.markdown("#### 📝 Currently viewing comments for Post ID:")
+                st.code(result['post_id'], language=None)
                 
                 if comments:
                     # Reply form
