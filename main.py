@@ -11,6 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, auth
 import requests
 import praw.exceptions as praw_ex
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -387,6 +388,158 @@ class RedditCore:
         except Exception as e:
             return {"success": False, "error": f"Failed to get flairs: {str(e)}"}
 
+    def get_user_posts(self, account_id: int, limit: int = 25, time_filter: str = "week") -> Dict[str, Any]:
+        """Get posts from a specific account."""
+        reddit_client = self.get_reddit_client(account_id)
+        if not reddit_client:
+            return {
+                "success": False,
+                "error": f"Invalid account_id: {account_id}. Use 1-{len(self.account_usernames)}"
+            }
+        
+        username = self.get_account_username(account_id)
+        
+        try:
+            user = reddit_client.user.me()
+            posts = []
+            
+            # Get submissions
+            submissions = user.submissions.new(limit=limit)
+            
+            for submission in submissions:
+                # Filter by time if specified
+                if time_filter != "all":
+                    post_age = datetime.utcnow() - datetime.fromtimestamp(submission.created_utc)
+                    if time_filter == "day" and post_age > timedelta(days=1):
+                        continue
+                    elif time_filter == "week" and post_age > timedelta(weeks=1):
+                        continue
+                    elif time_filter == "month" and post_age > timedelta(days=30):
+                        continue
+                
+                post_data = {
+                    "id": submission.id,
+                    "title": submission.title,
+                    "subreddit": submission.subreddit.display_name,
+                    "score": submission.score,
+                    "upvote_ratio": submission.upvote_ratio,
+                    "num_comments": submission.num_comments,
+                    "created_utc": submission.created_utc,
+                    "created_time": datetime.fromtimestamp(submission.created_utc).strftime("%Y-%m-%d %H:%M:%S"),
+                    "url": f"https://reddit.com{submission.permalink}",
+                    "is_self": submission.is_self,
+                    "selftext": submission.selftext[:200] + "..." if len(submission.selftext) > 200 else submission.selftext,
+                    "link_url": submission.url if not submission.is_self else None,
+                    "nsfw": submission.over_18,
+                    "spoiler": submission.spoiler,
+                    "pinned": submission.stickied,
+                    "archived": submission.archived,
+                    "locked": submission.locked
+                }
+                posts.append(post_data)
+            
+            return {
+                "success": True,
+                "username": username,
+                "posts": posts,
+                "total_posts": len(posts),
+                "time_filter": time_filter
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch posts: {str(e)}"
+            }
+
+    def get_post_comments(self, post_id: str, account_id: int, limit: int = 50) -> Dict[str, Any]:
+        """Get comments for a specific post."""
+        reddit_client = self.get_reddit_client(account_id)
+        if not reddit_client:
+            return {
+                "success": False,
+                "error": f"Invalid account_id: {account_id}. Use 1-{len(self.account_usernames)}"
+            }
+        
+        try:
+            submission = reddit_client.submission(id=post_id)
+            submission.comments.replace_more(limit=0)  # Flatten comment tree
+            
+            comments = []
+            for comment in submission.comments.list()[:limit]:
+                if hasattr(comment, 'body'):  # Make sure it's a comment, not MoreComments
+                    comment_data = {
+                        "id": comment.id,
+                        "author": str(comment.author) if comment.author else "[deleted]",
+                        "body": comment.body,
+                        "score": comment.score,
+                        "created_utc": comment.created_utc,
+                        "created_time": datetime.fromtimestamp(comment.created_utc).strftime("%Y-%m-%d %H:%M:%S"),
+                        "is_submitter": comment.is_submitter,
+                        "parent_id": comment.parent_id,
+                        "permalink": f"https://reddit.com{comment.permalink}",
+                        "depth": comment.depth
+                    }
+                    comments.append(comment_data)
+            
+            return {
+                "success": True,
+                "post_id": post_id,
+                "post_title": submission.title,
+                "comments": comments,
+                "total_comments": len(comments)
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch comments: {str(e)}"
+            }
+
+    def reply_to_comment(self, comment_id: str, reply_text: str, account_id: int) -> Dict[str, Any]:
+        """Reply to a specific comment."""
+        if not reply_text.strip():
+            return {
+                "success": False,
+                "error": "Reply text cannot be empty"
+            }
+        
+        reddit_client = self.get_reddit_client(account_id)
+        if not reddit_client:
+            return {
+                "success": False,
+                "error": f"Invalid account_id: {account_id}. Use 1-{len(self.account_usernames)}"
+            }
+        
+        username = self.get_account_username(account_id)
+        
+        try:
+            comment = reddit_client.comment(id=comment_id)
+            reply = comment.reply(reply_text)
+            
+            return {
+                "success": True,
+                "message": "Reply posted successfully",
+                "reply_details": {
+                    "reply_id": reply.id,
+                    "reply_url": f"https://reddit.com{reply.permalink}",
+                    "parent_comment_id": comment_id,
+                    "account_used": username,
+                    "reply_text": reply_text[:100] + "..." if len(reply_text) > 100 else reply_text
+                }
+            }
+            
+        except prawcore.exceptions.Forbidden as e:
+            return {
+                "success": False,
+                "error": f"Forbidden: Account '{username}' cannot reply to this comment"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to post reply: {str(e)}"
+            }
+
     def post_content(self, post_data: Dict[str, Any]) -> Dict[str, Any]:
         """Post content to a subreddit using specified account."""
         # Extract required parameters
@@ -537,7 +690,7 @@ def render_login_page(firebase_auth):
         st.markdown("### Welcome! Please sign in to continue")
         
         if firebase_auth.initialized:
-            st.info("🔒 Firebase authentication is enabled")
+            st.info("🔐 Firebase authentication is enabled")
             
             # Login form
             with st.form("login_form"):
@@ -566,7 +719,7 @@ def render_login_page(firebase_auth):
             st.markdown("**Need an account?** Contact your administrator to set up Firebase Authentication.")
             
         else:
-            st.warning("🔒 Firebase not configured - Running in demo mode")
+            st.warning("🔐 Firebase not configured - Running in demo mode")
             if st.button("Continue without Authentication"):
                 st.session_state.authenticated = True
                 st.session_state.user = {
@@ -622,219 +775,337 @@ def render_main_app(firebase_auth, reddit_core):
     st.title("Reddit Multi-Account Poster")
     
     if not hasattr(st.session_state, 'accounts_loaded') or not st.session_state.accounts_loaded:
-        st.warning("⚠️ Please load Reddit accounts from the sidebar first")
+        st.warning("⚠️ Please load Reddit accounts first using the sidebar button.")
         return
     
     accounts = st.session_state.get('reddit_accounts', [])
-    if not accounts:
-        st.error("❌ No Reddit accounts available")
-        return
     
-    # Tabs for different functionalities
-    tab1, tab2, tab3 = st.tabs(["📝 Create Post", "🔍 Verify Subreddit", "🏷️ Get Flairs"])
+    # Create tabs for different functionalities
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Create Post", "🔍 Verify Subreddit", "📊 My Posts", "💬 Comments", "🏷️ Get Flairs"])
     
     with tab1:
-        render_post_tab(reddit_core, accounts)
+        st.header("Create New Post")
+        
+        # Account selection
+        if not accounts:
+            st.error("No accounts available")
+            return
+            
+        account_options = [f"{acc['id']}. {acc['username']}" for acc in accounts]
+        selected_account = st.selectbox("Select Account", account_options)
+        account_id = int(selected_account.split('.')[0])
+        
+        # Post form
+        with st.form("post_form"):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                title = st.text_input("Post Title*", placeholder="Enter your post title...")
+                subreddit_name = st.text_input("Subreddit*", placeholder="python, askreddit, etc. (without r/)")
+            
+            with col2:
+                post_type = st.selectbox("Post Type", ["Text Post", "Link Post", "Image Post"])
+                nsfw = st.checkbox("NSFW")
+                spoiler = st.checkbox("Spoiler")
+                send_replies = st.checkbox("Send Reply Notifications", value=True)
+            
+            # Content based on post type
+            if post_type == "Text Post":
+                body = st.text_area("Post Content", placeholder="Write your post content here...", height=200)
+                url = None
+                image_path = None
+            elif post_type == "Link Post":
+                url = st.text_input("URL*", placeholder="https://example.com")
+                body = None
+                image_path = None
+            else:  # Image Post
+                uploaded_file = st.file_uploader("Choose an image", type=['png', 'jpg', 'jpeg', 'gif'])
+                if uploaded_file:
+                    # Save uploaded file temporarily
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
+                        tmp_file.write(uploaded_file.getvalue())
+                        image_path = tmp_file.name
+                else:
+                    image_path = None
+                body = None
+                url = None
+            
+            # Flair options
+            st.markdown("### Flair (Optional)")
+            col1, col2 = st.columns(2)
+            with col1:
+                flair_id = st.text_input("Flair ID", placeholder="Optional flair template ID")
+            with col2:
+                flair_text = st.text_input("Flair Text", placeholder="Optional custom flair text")
+            
+            submitted = st.form_submit_button("🚀 Post to Reddit", type="primary")
+            
+            if submitted:
+                if not title or not subreddit_name:
+                    st.error("Title and Subreddit are required!")
+                elif post_type == "Link Post" and not url:
+                    st.error("URL is required for link posts!")
+                elif post_type == "Image Post" and not image_path:
+                    st.error("Please upload an image!")
+                else:
+                    # Prepare post data
+                    post_data = {
+                        "account_id": account_id,
+                        "subreddit_name": subreddit_name.strip(),
+                        "title": title.strip(),
+                        "body": body,
+                        "url": url,
+                        "image_path": image_path,
+                        "flair_id": flair_id.strip() if flair_id else None,
+                        "flair_text": flair_text.strip() if flair_text else None,
+                        "nsfw": nsfw,
+                        "spoiler": spoiler,
+                        "send_replies": send_replies
+                    }
+                    
+                    with st.spinner("Posting to Reddit..."):
+                        result = reddit_core.post_content(post_data)
+                    
+                    if result["success"]:
+                        st.success(f"✅ {result['message']}")
+                        post_details = result["post_details"]
+                        
+                        # Display post details
+                        st.markdown("### Post Details")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Post ID:** {post_details['post_id']}")
+                            st.write(f"**Post Type:** {post_details['post_type']}")
+                            st.write(f"**Account Used:** {post_details['account_used']}")
+                        
+                        with col2:
+                            st.write(f"**Subreddit:** r/{post_details['subreddit']}")
+                            st.write(f"**NSFW:** {post_details['nsfw']}")
+                            st.write(f"**Spoiler:** {post_details['spoiler']}")
+                        
+                        if post_details['post_url']:
+                            st.markdown(f"🔗 **[View Post on Reddit]({post_details['post_url']})**")
+                    else:
+                        st.error(f"❌ Failed to post: {result['error']}")
+                        if 'details' in result:
+                            st.error(f"Details: {result['details']}")
     
     with tab2:
-        render_verify_tab(reddit_core, accounts)
-    
-    with tab3:
-        render_flair_tab(reddit_core, accounts)
-
-def render_post_tab(reddit_core, accounts):
-    """Render the post creation tab."""
-    st.header("Create New Post")
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        # Account selection
-        account_options = [f"{acc['id']}. {acc['username']}" for acc in accounts]
-        selected_account = st.selectbox("Select Reddit Account", account_options)
-        account_id = int(selected_account.split('.')[0]) if selected_account else 1
+        st.header("Verify Subreddit")
         
-        # Subreddit
-        subreddit_name = st.text_input("Subreddit Name", placeholder="e.g., AskReddit")
+        col1, col2 = st.columns([2, 1])
         
-        # Title
-        title = st.text_input("Post Title", placeholder="Enter your post title")
-    
-    with col2:
-        # Post type
-        post_type = st.radio("Post Type", ["Text Post", "Link Post", "Image Post"])
+        with col1:
+            verify_subreddit = st.text_input("Subreddit to verify", placeholder="python, askreddit, etc.")
         
-        # Content based on type
-        if post_type == "Text Post":
-            body = st.text_area("Post Content", placeholder="Enter your text content here...")
-            url = None
-            image_path = None
-        elif post_type == "Link Post":
-            url = st.text_input("URL", placeholder="https://example.com")
-            body = None
-            image_path = None
-        else:  # Image Post
-            uploaded_file = st.file_uploader("Choose an image", type=['png', 'jpg', 'jpeg'])
-            if uploaded_file:
-                # Save uploaded file
-                os.makedirs("temp", exist_ok=True)
-                image_path = f"temp/{uploaded_file.name}"
-                with open(image_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-            else:
-                image_path = None
-            body = None
-            url = None
-    
-    # Advanced options
-    with st.expander("Advanced Options"):
-        col3, col4 = st.columns(2)
-        with col3:
-            nsfw = st.checkbox("NSFW")
-            spoiler = st.checkbox("Spoiler")
-        with col4:
-            send_replies = st.checkbox("Send Replies to Inbox", value=True)
-            flair_text = st.text_input("Custom Flair Text (optional)")
-            flair_id = st.text_input("Flair ID (optional)")
-
-    # Submit button
-    if st.button("🚀 Submit Post", type="primary"):
-        if not all([subreddit_name, title]):
-            st.error("Please fill in subreddit name and title")
-            return
-        
-        post_data = {
-            "account_id": account_id,
-            "subreddit_name": subreddit_name,
-            "title": title,
-            "body": body,
-            "url": url,
-            "image_path": image_path,
-            "flair_id": flair_id if flair_id else None,
-            "flair_text": flair_text if flair_text else None,
-            "nsfw": nsfw,
-            "spoiler": spoiler,
-            "send_replies": send_replies
-        }
-        
-        with st.spinner("Posting to Reddit..."):
-            result = reddit_core.post_content(post_data)
-        
-        if result["success"]:
-            st.success("✅ Post submitted successfully!")
-            post_details = result["post_details"]
-            
-            st.markdown("### Post Details")
-            col5, col6 = st.columns(2)
-            with col5:
-                st.write(f"**Post ID:** {post_details['post_id']}")
-                st.write(f"**Post Type:** {post_details['post_type']}")
-                st.write(f"**Subreddit:** r/{post_details['subreddit']}")
-            with col6:
-                st.write(f"**Account Used:** {post_details['account_used']}")
-                st.write(f"**NSFW:** {post_details['nsfw']}")
-                st.write(f"**Spoiler:** {post_details['spoiler']}")
-            
-            if post_details['post_url']:
-                st.markdown(f"**[View Post on Reddit]({post_details['post_url']})**")
-        else:
-            st.error(f"❌ Failed to post: {result['error']}")
-
-def render_verify_tab(reddit_core, accounts):
-    """Render the subreddit verification tab."""
-    st.header("Verify Subreddit")
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        account_options = [f"{acc['id']}. {acc['username']}" for acc in accounts]
-        selected_account = st.selectbox("Select Reddit Account", account_options, key="verify_account")
-        account_id = int(selected_account.split('.')[0]) if selected_account else 1
-        
-        subreddit_name = st.text_input("Subreddit Name", placeholder="e.g., AskReddit", key="verify_subreddit")
+        with col2:
+            verify_account = st.selectbox("Using Account", account_options, key="verify_account")
+            verify_account_id = int(verify_account.split('.')[0])
         
         if st.button("🔍 Verify Subreddit"):
-            if subreddit_name:
+            if verify_subreddit:
                 with st.spinner("Verifying subreddit..."):
-                    result = reddit_core.verify_subreddit(subreddit_name, account_id)
+                    result = reddit_core.verify_subreddit(verify_subreddit.strip(), verify_account_id)
                 
                 if result["success"]:
                     subreddit_info = result["subreddit"]
-                    st.success("✅ Subreddit found!")
+                    st.success(f"✅ r/{subreddit_info['display_name']} is accessible!")
+                    
+                    # Display subreddit info
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.metric("Subscribers", f"{subreddit_info['subscribers']:,}")
+                        st.write(f"**NSFW:** {'Yes' if subreddit_info['nsfw'] else 'No'}")
                     
                     with col2:
-                        st.markdown("### Subreddit Info")
-                        st.write(f"**Name:** r/{subreddit_info['display_name']}")
-                        st.write(f"**Subscribers:** {subreddit_info['subscribers']:,}")
-                        st.write(f"**NSFW:** {subreddit_info['nsfw']}")
-                        if subreddit_info['description']:
-                            st.write(f"**Description:** {subreddit_info['description'][:100]}...")
+                        st.write("**Description:**")
+                        st.write(subreddit_info['description'][:200] + "..." if len(subreddit_info['description']) > 200 else subreddit_info['description'])
                 else:
                     st.error(f"❌ {result['error']}")
             else:
-                st.error("Please enter a subreddit name")
-
-def render_flair_tab(reddit_core, accounts):
-    """Render the flair retrieval tab."""
-    st.header("Get Subreddit Flairs")
+                st.warning("Please enter a subreddit name")
     
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        account_options = [f"{acc['id']}. {acc['username']}" for acc in accounts]
-        selected_account = st.selectbox("Select Reddit Account", account_options, key="flair_account")
-        account_id = int(selected_account.split('.')[0]) if selected_account else 1
+    with tab3:
+        st.header("My Posts")
         
-        subreddit_name = st.text_input("Subreddit Name", placeholder="e.g., AskReddit", key="flair_subreddit")
+        col1, col2, col3 = st.columns([2, 1, 1])
         
-        if st.button("🏷️ Get Flairs"):
-            if subreddit_name:
-                with st.spinner("Fetching flairs..."):
-                    result = reddit_core.get_flairs(subreddit_name, account_id)
+        with col1:
+            posts_account = st.selectbox("Select Account", account_options, key="posts_account")
+            posts_account_id = int(posts_account.split('.')[0])
+        
+        with col2:
+            time_filter = st.selectbox("Time Filter", ["day", "week", "month", "all"])
+        
+        with col3:
+            post_limit = st.number_input("Limit", min_value=1, max_value=100, value=25)
+        
+        if st.button("📊 Get My Posts"):
+            with st.spinner("Fetching posts..."):
+                result = reddit_core.get_user_posts(posts_account_id, post_limit, time_filter)
+            
+            if result["success"]:
+                posts = result["posts"]
+                st.success(f"✅ Found {len(posts)} posts for u/{result['username']}")
                 
-                if result["success"]:
-                    flairs = result["flairs"]
-                    st.success(f"✅ Found {len(flairs)} flairs")
-                    
-                    with col2:
-                        st.markdown("### Available Flairs")
-                        if flairs:
-                            for flair in flairs:
-                                st.markdown(f"**{flair['text'] or 'No Text'}**")
-                                st.write(f"ID: `{flair['id']}`")
-                                if flair['text_editable']:
-                                    st.write("✏️ Text Editable")
-                                st.markdown("---")
-                        else:
-                            st.info("No flairs available for this subreddit")
+                if posts:
+                    for post in posts:
+                        with st.expander(f"📝 {post['title'][:80]}... | r/{post['subreddit']} | {post['score']} pts"):
+                            col1, col2 = st.columns([2, 1])
+                            
+                            with col1:
+                                st.write(f"**Title:** {post['title']}")
+                                st.write(f"**Subreddit:** r/{post['subreddit']}")
+                                if post['is_self'] and post['selftext']:
+                                    st.write(f"**Content:** {post['selftext']}")
+                                elif not post['is_self'] and post['link_url']:
+                                    st.write(f"**Link:** {post['link_url']}")
+                            
+                            with col2:
+                                st.metric("Score", post['score'])
+                                st.metric("Comments", post['num_comments'])
+                                st.write(f"**Created:** {post['created_time']}")
+                                st.write(f"**Upvote Ratio:** {post['upvote_ratio']:.1%}")
+                                
+                                if post['nsfw']:
+                                    st.warning("NSFW")
+                                if post['spoiler']:
+                                    st.warning("Spoiler")
+                                if post['locked']:
+                                    st.warning("Locked")
+                                
+                                st.markdown(f"[View on Reddit]({post['url']})")
                 else:
-                    st.error(f"❌ {result['error']}")
+                    st.info("No posts found for the selected time period.")
             else:
-                st.error("Please enter a subreddit name")
+                st.error(f"❌ {result['error']}")
+    
+    with tab4:
+        st.header("Post Comments")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            post_id = st.text_input("Post ID", placeholder="Enter Reddit post ID (e.g., abc123)")
+            comment_account = st.selectbox("Using Account", account_options, key="comment_account")
+            comment_account_id = int(comment_account.split('.')[0])
+        
+        with col2:
+            comment_limit = st.number_input("Comment Limit", min_value=1, max_value=200, value=50)
+        
+        if st.button("💬 Get Comments") and post_id:
+            with st.spinner("Fetching comments..."):
+                result = reddit_core.get_post_comments(post_id.strip(), comment_account_id, comment_limit)
+            
+            if result["success"]:
+                comments = result["comments"]
+                st.success(f"✅ Found {len(comments)} comments for: {result['post_title']}")
+                
+                if comments:
+                    # Reply form
+                    with st.form("reply_form"):
+                        st.markdown("### Reply to a Comment")
+                        
+                        # Select comment to reply to
+                        comment_options = [f"{c['id']} - {c['author']}: {c['body'][:50]}..." for c in comments[:20]]  # Limit options for UI
+                        selected_comment = st.selectbox("Select Comment to Reply To", comment_options)
+                        reply_text = st.text_area("Your Reply", placeholder="Type your reply here...")
+                        
+                        if st.form_submit_button("Reply"):
+                            if reply_text.strip():
+                                comment_id = selected_comment.split(' - ')[0]
+                                with st.spinner("Posting reply..."):
+                                    reply_result = reddit_core.reply_to_comment(comment_id, reply_text, comment_account_id)
+                                
+                                if reply_result["success"]:
+                                    st.success(f"✅ Reply posted successfully!")
+                                    reply_details = reply_result["reply_details"]
+                                    st.markdown(f"[View Reply]({reply_details['reply_url']})")
+                                else:
+                                    st.error(f"❌ {reply_result['error']}")
+                            else:
+                                st.error("Reply text cannot be empty")
+                    
+                    st.markdown("---")
+                    st.markdown("### Comments")
+                    
+                    for comment in comments:
+                        indent = "  " * comment['depth']  # Indent based on comment depth
+                        with st.expander(f"{indent}💬 u/{comment['author']} | {comment['score']} pts | {comment['created_time']}"):
+                            st.write(f"**Comment ID:** {comment['id']}")
+                            st.write(f"**Author:** u/{comment['author']}")
+                            st.write(f"**Score:** {comment['score']}")
+                            st.write(f"**Depth:** {comment['depth']}")
+                            st.write(f"**Created:** {comment['created_time']}")
+                            if comment['is_submitter']:
+                                st.info("👑 Original Poster")
+                            
+                            st.markdown("**Comment:**")
+                            st.write(comment['body'])
+                            
+                            st.markdown(f"[View on Reddit]({comment['permalink']})")
+                else:
+                    st.info("No comments found for this post.")
+            else:
+                st.error(f"❌ {result['error']}")
+    
+    with tab5:
+        st.header("Get Subreddit Flairs")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            flair_subreddit = st.text_input("Subreddit", placeholder="python, askreddit, etc.")
+        
+        with col2:
+            flair_account = st.selectbox("Using Account", account_options, key="flair_account")
+            flair_account_id = int(flair_account.split('.')[0])
+        
+        if st.button("🏷️ Get Flairs") and flair_subreddit:
+            with st.spinner("Fetching flairs..."):
+                result = reddit_core.get_flairs(flair_subreddit.strip(), flair_account_id)
+            
+            if result["success"]:
+                flairs = result["flairs"]
+                st.success(f"✅ Found {result['flair_count']} flairs for r/{result['subreddit']}")
+                
+                if flairs:
+                    st.markdown("### Available Flairs")
+                    
+                    for i, flair in enumerate(flairs, 1):
+                        with st.expander(f"🏷️ Flair {i}: {flair['text'] or 'No text'}"):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**ID:** `{flair['id']}`")
+                                st.write(f"**Text:** {flair['text'] or 'None'}")
+                                st.write(f"**Editable:** {'Yes' if flair['text_editable'] else 'No'}")
+                            
+                            with col2:
+                                st.write(f"**Text Color:** {flair['text_color'] or 'Default'}")
+                                st.write(f"**Background Color:** {flair['background_color'] or 'Default'}")
+                                
+                                # Copy button for flair ID
+                                st.code(flair['id'], language=None)
+                                st.caption("↑ Copy this ID to use in posts")
+                else:
+                    st.info("No flairs found for this subreddit.")
+            else:
+                st.error(f"❌ {result['error']}")
 
 def main():
     """Main application entry point."""
-    # Initialize session state
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    if 'user' not in st.session_state:
-        st.session_state.user = None
-    
     # Initialize components
     firebase_auth, reddit_core = init_components()
     
-    # Route to appropriate page
-    if not st.session_state.authenticated:
+    # Check authentication
+    if not st.session_state.get("authenticated", False):
         render_login_page(firebase_auth)
     else:
         render_main_app(firebase_auth, reddit_core)
 
-# Run the application
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.error(f"Application error: {str(e)}")
-        st.error("🚨 An error occurred while running the application")
-        st.error(f"Error details: {str(e)}")
-        st.info("Please check your configuration and try again")
+    main()
