@@ -179,43 +179,115 @@ class RedditCore:
         self.is_loaded = False
 
     def load_accounts_from_env(self) -> Dict[str, Dict[str, str]]:
-        """Load up to 30 Reddit accounts from environment variables."""
+        """Load up to 30 Reddit accounts from environment variables or Streamlit secrets."""
         accounts = {}
-        
-        # Try to load up to 30 accounts
+    
+    # Try to load up to 30 accounts
         for i in range(1, 31):
             prefix = f"REDDIT_ACCOUNT_{i}"
             config = {
-                "client_id": os.getenv(f"{prefix}_CLIENT_ID"),
-                "client_secret": os.getenv(f"{prefix}_CLIENT_SECRET"),
-                "username": os.getenv(f"{prefix}_USERNAME"),
-                "password": os.getenv(f"{prefix}_PASSWORD"),
-                "user_agent": os.getenv(f"{prefix}_USER_AGENT"),
-            }
-            
-            # Check if all required fields are present
+            "client_id": None,
+            "client_secret": None,
+            "username": None,
+            "password": None,
+            "user_agent": None,
+        }
+        
+        # First try environment variables
+            config["client_id"] = os.getenv(f"{prefix}_CLIENT_ID")
+            config["client_secret"] = os.getenv(f"{prefix}_CLIENT_SECRET")
+            config["username"] = os.getenv(f"{prefix}_USERNAME")
+            config["password"] = os.getenv(f"{prefix}_PASSWORD")
+            config["user_agent"] = os.getenv(f"{prefix}_USER_AGENT")
+        
+        # If not found in env vars, try Streamlit secrets
+            if not all(config.values()):
+                try:
+                    import streamlit as st
+                    if hasattr(st, 'secrets'):
+                    # Try to get from Streamlit secrets
+                        secrets = st.secrets
+                    
+                    # Check if there's a reddit section in secrets
+                    if "reddit" in secrets:
+                        reddit_secrets = secrets["reddit"]
+                        
+                        # Try account-specific keys first
+                        account_key = f"account_{i}"
+                        if account_key in reddit_secrets:
+                            account_secrets = reddit_secrets[account_key]
+                            config["client_id"] = account_secrets.get("client_id")
+                            config["client_secret"] = account_secrets.get("client_secret")
+                            config["username"] = account_secrets.get("username")
+                            config["password"] = account_secrets.get("password")
+                            config["user_agent"] = account_secrets.get("user_agent")
+                        else:
+                            # Try individual keys with account number suffix
+                            config["client_id"] = config["client_id"] or reddit_secrets.get(f"client_id_{i}")
+                            config["client_secret"] = config["client_secret"] or reddit_secrets.get(f"client_secret_{i}")
+                            config["username"] = config["username"] or reddit_secrets.get(f"username_{i}")
+                            config["password"] = config["password"] or reddit_secrets.get(f"password_{i}")
+                            config["user_agent"] = config["user_agent"] or reddit_secrets.get(f"user_agent_{i}")
+                    
+                    # Also try top-level secrets with the full key name
+                    for key, value in config.items():
+                        if not value:
+                            secret_key = f"{prefix}_{key.upper()}"
+                            if secret_key in secrets:
+                                config[key] = secrets[secret_key]
+                                
+                except Exception as e:
+                    logger.warning(f"Could not access Streamlit secrets for {prefix}: {e}")
+        
+        # Check if all required fields are present
             if all(config.values()):
                 account_name = config["username"]
                 accounts[account_name] = config
                 logger.info(f"Found account config: {account_name}")
             elif any(config.values()):
                 logger.warning(f"Incomplete configuration for {prefix} - skipping")
-        
-        # Fallback to single account format
+    
+    # Fallback to single account format (for backwards compatibility)
         if not accounts:
             config = {
-                "client_id": os.getenv("REDDIT_CLIENT_ID"),
-                "client_secret": os.getenv("REDDIT_CLIENT_SECRET"),
-                "username": os.getenv("REDDIT_USERNAME"),
-                "password": os.getenv("REDDIT_PASSWORD"),
-                "user_agent": os.getenv("REDDIT_USER_AGENT"),
-            }
+            "client_id": os.getenv("REDDIT_CLIENT_ID"),
+            "client_secret": os.getenv("REDDIT_CLIENT_SECRET"),
+            "username": os.getenv("REDDIT_USERNAME"),
+            "password": os.getenv("REDDIT_PASSWORD"),
+            "user_agent": os.getenv("REDDIT_USER_AGENT"),
+        }
+        
+        # Try Streamlit secrets for single account
+            if not all(config.values()):
+                try:
+                    import streamlit as st
+                    if hasattr(st, 'secrets'):
+                        secrets = st.secrets
+                    
+                    # Try reddit section first
+                        if "reddit" in secrets:
+                            reddit_secrets = secrets["reddit"]
+                            config["client_id"] = config["client_id"] or reddit_secrets.get("client_id")
+                            config["client_secret"] = config["client_secret"] or reddit_secrets.get("client_secret")
+                            config["username"] = config["username"] or reddit_secrets.get("username")
+                            config["password"] = config["password"] or reddit_secrets.get("password")
+                            config["user_agent"] = config["user_agent"] or reddit_secrets.get("user_agent")
+                    
+                        # Try top-level secrets
+                        config["client_id"] = config["client_id"] or secrets.get("REDDIT_CLIENT_ID")
+                        config["client_secret"] = config["client_secret"] or secrets.get("REDDIT_CLIENT_SECRET")
+                        config["username"] = config["username"] or secrets.get("REDDIT_USERNAME")
+                        config["password"] = config["password"] or secrets.get("REDDIT_PASSWORD")
+                        config["user_agent"] = config["user_agent"] or secrets.get("REDDIT_USER_AGENT")
+                    
+                except Exception as e:
+                    logger.warning(f"Could not access Streamlit secrets for single account: {e}")
+        
             if all(config.values()):
                 accounts[config["username"]] = config
-        
+    
         logger.info(f"Total accounts found: {len(accounts)}")
-        return accounts
-
+        return accounts    
     def load_accounts(self) -> Dict[str, Any]:
         """Load and configure all available Reddit accounts."""
         try:
