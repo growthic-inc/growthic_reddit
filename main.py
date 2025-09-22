@@ -6,6 +6,10 @@ from typing import List, Dict, Any, Optional
 import streamlit as st
 import praw
 import prawcore
+import schedule
+import threading
+from datetime import datetime, timedelta
+import pytz
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, auth
@@ -611,7 +615,45 @@ class RedditCore:
                 "success": False,
                 "error": f"Failed to post reply: {str(e)}"
             }
-
+    def post_scheduled_comment(self, post_url: str, comment_text: str, account_id: int) -> Dict[str, Any]:
+        """Post a comment to a Reddit post using URL."""
+        if not comment_text.strip():
+            return {"success": False, "error": "Comment text cannot be empty"}
+    
+        reddit_client = self.get_reddit_client(account_id)
+        if not reddit_client:
+            return {
+            "success": False,
+            "error": f"Invalid account_id: {account_id}. Use 1-{len(self.account_usernames)}"
+        }
+    
+        username = self.get_account_username(account_id)
+    
+        try:
+            # Extract post ID from URL
+            if "/comments/" in post_url:
+                post_id = post_url.split("/comments/")[1].split("/")[0]
+            else:
+                return {"success": False, "error": "Invalid Reddit post URL"}
+        
+            submission = reddit_client.submission(id=post_id)
+            comment = submission.reply(comment_text)
+        
+            return {
+            "success": True,
+            "message": "Comment posted successfully",
+            "comment_details": {
+                "comment_id": comment.id,
+                "comment_url": f"https://reddit.com{comment.permalink}",
+                "post_id": post_id,
+                "account_used": username,
+                "comment_text": comment_text[:100] + "..." if len(comment_text) > 100 else comment_text
+            }
+        }
+        
+        except Exception as e:
+            return {"success": False, "error": f"Failed to post comment: {str(e)}"}
+    
     def post_content(self, post_data: Dict[str, Any]) -> Dict[str, Any]:
         """Post content to a subreddit using specified account."""
         # Extract required parameters
@@ -742,6 +784,79 @@ class RedditCore:
             error_msg = f"Failed to post: {str(e)}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
+        
+class CommentScheduler:
+    """Handle scheduled comment posting."""
+    
+    def __init__(self, reddit_core):
+        self.reddit_core = reddit_core
+        self.scheduled_jobs = []
+        self.scheduler_thread = None
+        self.running = False
+    
+    def schedule_comment(self, post_url: str, comment_text: str, account_id: int, scheduled_time: datetime) -> Dict[str, Any]:
+        """Schedule a comment to be posted at a specific time."""
+        try:
+            job_id = f"comment_{len(self.scheduled_jobs)}_{int(scheduled_time.timestamp())}"
+            
+            def post_job():
+                result = self.reddit_core.post_scheduled_comment(post_url, comment_text, account_id)
+                logger.info(f"Scheduled comment job {job_id} completed: {result}")
+                # Remove completed job from list
+                self.scheduled_jobs = [job for job in self.scheduled_jobs if job['id'] != job_id]
+            
+            # Schedule the job
+            schedule.every().day.at(scheduled_time.strftime("%H:%M")).do(post_job).tag(job_id)
+            
+            # Add to tracking list
+            job_info = {
+                'id': job_id,
+                'post_url': post_url,
+                'comment_text': comment_text[:50] + "..." if len(comment_text) > 50 else comment_text,
+                'account_id': account_id,
+                'scheduled_time': scheduled_time,
+                'status': 'pending'
+            }
+            self.scheduled_jobs.append(job_info)
+            
+            # Start scheduler if not running
+            if not self.running:
+                self.start_scheduler()
+            
+            return {
+                "success": True,
+                "message": f"Comment scheduled for {scheduled_time.strftime('%Y-%m-%d %H:%M')}",
+                "job_id": job_id
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": f"Failed to schedule comment: {str(e)}"}
+    
+    def start_scheduler(self):
+        """Start the scheduler thread."""
+        if not self.running:
+            self.running = True
+            self.scheduler_thread = threading.Thread(target=self._run_scheduler, daemon=True)
+            self.scheduler_thread.start()
+    
+    def _run_scheduler(self):
+        """Run the scheduler in a separate thread."""
+        while self.running:
+            schedule.run_pending()
+            time.sleep(60)  # Check every minute
+    
+    def get_scheduled_jobs(self):
+        """Get list of scheduled jobs."""
+        return self.scheduled_jobs
+    
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a scheduled job."""
+        try:
+            schedule.clear(job_id)
+            self.scheduled_jobs = [job for job in self.scheduled_jobs if job['id'] != job_id]
+            return True
+        except:
+            return False
 
 # Initialize components
 @st.cache_resource
@@ -749,7 +864,8 @@ def init_components():
     """Initialize Firebase and Reddit components."""
     firebase_auth = FirebaseAuth()
     reddit_core = RedditCore()
-    return firebase_auth, reddit_core
+    comment_scheduler = CommentScheduler(reddit_core)
+    return firebase_auth, reddit_core, comment_scheduler
 
 def render_login_page(firebase_auth):
     """Render the login page with email/password form."""
@@ -801,7 +917,7 @@ def render_login_page(firebase_auth):
                 }
                 st.rerun()
 
-def render_main_app(firebase_auth, reddit_core):
+def render_main_app(firebase_auth, reddit_core, comment_scheduler):
     """Render the main application."""
     # Sidebar
     with st.sidebar:
@@ -853,7 +969,7 @@ def render_main_app(firebase_auth, reddit_core):
     accounts = st.session_state.get('reddit_accounts', [])
     
     # Create tabs for different functionalities
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Create Post", "🔍 Verify Subreddit", "📊 My Posts", "💬 Comments", "🏷️ Get Flairs"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Create Post", "Verify Subreddit", "My Posts", "Comments", "Get Flairs", "Schedule Comments"])
     
     with tab1:
         st.header("Create New Post")
@@ -1198,16 +1314,93 @@ def render_main_app(firebase_auth, reddit_core):
             else:
                 st.error(f"❌ {result['error']}")
 
+    with tab6:
+        st.header("Schedule Comments")
+    
+    # Schedule new comment section
+        st.subheader("Schedule New Comment")
+    
+        with st.form("schedule_comment_form"):
+            col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            post_url = st.text_input("Reddit Post URL*", placeholder="https://www.reddit.com/r/subreddit/comments/...")
+            comment_text = st.text_area("Comment Text*", placeholder="Your comment here...", height=100)
+        
+        with col2:
+            comment_account = st.selectbox("Select Account", account_options, key="schedule_account")
+            comment_account_id = int(comment_account.split('.')[0])
+            
+            # Date and time selection
+            schedule_date = st.date_input("Schedule Date", min_value=datetime.now().date())
+            schedule_time = st.time_input("Schedule Time")
+        
+            submitted = st.form_submit_button("⏰ Schedule Comment", type="primary")
+        
+            if submitted:
+                if not post_url or not comment_text:
+                    st.error("Post URL and Comment Text are required!")
+                else:
+                    # Combine date and time
+                    scheduled_datetime = datetime.combine(schedule_date, schedule_time)
+                    
+                    # Check if scheduled time is in the future
+                    if scheduled_datetime <= datetime.now():
+                        st.error("Scheduled time must be in the future!")
+                    else:
+                        result = comment_scheduler.schedule_comment(
+                            post_url.strip(), 
+                            comment_text.strip(), 
+                            comment_account_id, 
+                            scheduled_datetime
+                        )
+                        
+                        if result["success"]:
+                            st.success(f"✅ {result['message']}")
+                            st.info(f"Job ID: {result['job_id']}")
+                        else:
+                            st.error(f"❌ {result['error']}")
+        
+        st.markdown("---")
+        
+        # Show scheduled jobs
+        st.subheader("Scheduled Comments")
+        
+        scheduled_jobs = comment_scheduler.get_scheduled_jobs()
+        
+        if scheduled_jobs:
+            for job in scheduled_jobs:
+                with st.expander(f"⏰ {job['scheduled_time'].strftime('%Y-%m-%d %H:%M')} | {job['comment_text']}"):
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.write(f"**Job ID:** {job['id']}")
+                        st.write(f"**Post URL:** {job['post_url']}")
+                        st.write(f"**Comment:** {job['comment_text']}")
+                        st.write(f"**Account:** {accounts[job['account_id']-1]['username']}")
+                        st.write(f"**Scheduled:** {job['scheduled_time'].strftime('%Y-%m-%d %H:%M:%S')}")
+                        st.write(f"**Status:** {job['status']}")
+                    
+                    with col2:
+                        if st.button("🗑️ Cancel", key=f"cancel_{job['id']}"):
+                            if comment_scheduler.cancel_job(job['id']):
+                                st.success("Job cancelled!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to cancel job")
+        else:
+            st.info("No scheduled comments")
+
 def main():
     """Main application entry point."""
     # Initialize components
-    firebase_auth, reddit_core = init_components()
+    firebase_auth, reddit_core, comment_scheduler = init_components()
     
     # Check authentication
     if not st.session_state.get("authenticated", False):
         render_login_page(firebase_auth)
     else:
-        render_main_app(firebase_auth, reddit_core)
+        render_main_app(firebase_auth, reddit_core, comment_scheduler)
 
 if __name__ == "__main__":
     main()
